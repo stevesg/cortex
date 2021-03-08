@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
@@ -14,6 +15,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/cortexproject/cortex/pkg/util/services"
+)
+
+var (
+	settleRetryTimeout  = 60 * time.Second
+	settleRetryInterval = 10 * time.Second
 )
 
 // state represents the Alertmanager silences and notification log internal state.
@@ -119,10 +125,46 @@ func (s *state) Position() int {
 // The idea is that we don't want to start working" before we get a chance to know most of the notifications and/or silences.
 func (s *state) starting(ctx context.Context) error {
 	level.Info(s.logger).Log("msg", "Waiting for notification and silences to settle...")
+	settleCtx, cancel := context.WithTimeout(ctx, settleRetryTimeout)
+	defer cancel()
 
-	// TODO: Make sure that the state is fully synchronised at this point.
 	// We can check other alertmanager(s) and explicitly ask them to propagate their state to us if available.
+	s.settle(settleCtx, settleRetryInterval)
 	return nil
+}
+
+func (s *state) settle(ctx context.Context, interval time.Duration) {
+	// If the replication factor is <= 1, there is nowhere to obtain the state from.
+	if s.replicationFactor <= 1 {
+		return
+	}
+
+	start := time.Now()
+	level.Info(s.logger).Log("msg", "Waiting for notification and silences to settle...")
+
+	// Check other alertmanager(s) and explicitly ask them to propagate their state to us if available.
+	attempts := 0
+	for {
+		attempts++
+		fullStates, err := s.replicator.ReadFullStateForUser(ctx, s.userID)
+		if err == nil {
+			elapsed := time.Since(start)
+			level.Info(s.logger).Log("msg", "state settled; proceeding", "elapsed", elapsed)
+			s.mergeFullStates(fullStates)
+			return
+		}
+
+		elapsed := time.Since(start)
+		level.Info(s.logger).Log("msg", "failed to settle state", "attempts", attempts, "elapsed", elapsed, "err", err)
+
+		select {
+		case <-ctx.Done():
+			elapsed := time.Since(start)
+			level.Info(s.logger).Log("msg", "state not settled but continuing anyway", "attempts", attempts, "elapsed", elapsed)
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 // WaitReady is needed for the pipeline builder to know whenever we've settled and the state is up to date.
@@ -132,6 +174,25 @@ func (s *state) WaitReady(ctx context.Context) error {
 
 func (s *state) Ready() bool {
 	return s.Service.State() == services.Running
+}
+
+// mergeFullStates attempts to merge all full states received from peers during settling.
+func (s *state) mergeFullStates(fs []*clusterpb.FullState) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
+	for _, f := range fs {
+		for _, p := range f.Parts {
+
+			if st, ok := s.states[p.Key]; !ok {
+				level.Error(s.logger).Log("msg", "key not found while merging full state", "user", s.userID, "key", p.Key)
+			} else {
+				if err := st.Merge(p.Data); err != nil {
+					level.Error(s.logger).Log("msg", "failed to merge part of full state", "user", s.userID, "key")
+				}
+			}
+		}
+	}
 }
 
 func (s *state) running(ctx context.Context) error {
