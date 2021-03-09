@@ -1,7 +1,9 @@
 syntax = "proto3";
 
 package alertmanagerpb;
+import "gogoproto/gogo.proto";
 
+option (gogoproto.equal_all) = false;
 option go_package = "alertmanagerpb";
 
 import "github.com/weaveworks/common/httpgrpc/httpgrpc.proto";
@@ -11,6 +13,7 @@ import "github.com/prometheus/alertmanager/cluster/clusterpb/cluster.proto";
 service Alertmanager {
   rpc HandleRequest(httpgrpc.HTTPRequest) returns(httpgrpc.HTTPResponse) {};
   rpc UpdateState(clusterpb.Part) returns (UpdateStateResponse) {};
+  rpc ReadState(ReadStateRequest) returns (ReadStateResponse) {};
 }
 enum UpdateStateStatus {
   OK = 0;
@@ -21,5 +24,20 @@ enum UpdateStateStatus {
 message UpdateStateResponse {
   UpdateStateStatus status = 1;
   string error = 2;
+}
+
+message ReadStateRequest {
+}
+
+enum ReadStateStatus {
+  READ_OK = 0;
+  READ_ERROR = 2;
+  READ_USER_NOT_FOUND = 3;
+}
+
+message ReadStateResponse {
+  ReadStateStatus status = 1;
+  string error = 2;
+  clusterpb.FullState state = 3;
 }
 

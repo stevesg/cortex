@@ -22,11 +22,12 @@ import (
 )
 
 type fakeState struct {
+	binary []byte
 	merges [][]byte
 }
 
 func (s *fakeState) MarshalBinary() ([]byte, error) {
-	return []byte{}, nil
+	return s.binary, nil
 }
 
 func (s *fakeState) Merge(data []byte) error {
@@ -292,6 +293,62 @@ func TestStateReplication_Settle(t *testing.T) {
 			// Note: We don't actually test beyond Merge() here, just that all data is forwarded.
 			assert.Equal(t, tt.results["key1"], key1State.merges)
 			assert.Equal(t, tt.results["key2"], key2State.merges)
+		})
+	}
+}
+
+func TestStateReplication_GetFullState(t *testing.T) {
+
+	tc := []struct {
+		name   string
+		keys   []string
+		data   [][]byte
+		result *clusterpb.FullState
+	}{
+		{
+			name: "no keys",
+			keys: []string{},
+			data: [][]byte{},
+			result: &clusterpb.FullState{
+				Parts: []clusterpb.Part{},
+			},
+		},
+		{
+			name: "zero length data",
+			keys: []string{"key1"},
+			data: [][]byte{{}},
+			result: &clusterpb.FullState{
+				Parts: []clusterpb.Part{
+					{Key: "key1", Data: []byte{}},
+				},
+			},
+		},
+		{
+			name: "keys with data",
+			keys: []string{"key1", "key2"},
+			data: [][]byte{[]byte("Datum1"), []byte("Datum2")},
+			result: &clusterpb.FullState{
+				Parts: []clusterpb.Part{
+					{Key: "key1", Data: []byte("Datum1")},
+					{Key: "key2", Data: []byte("Datum2")},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tc {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := prometheus.NewPedanticRegistry()
+			s := newReplicatedStates("user-1", 1, nil, log.NewLogfmtLogger(os.Stdout), reg)
+
+			for i, key := range tt.keys {
+				state := &fakeState{binary: tt.data[i]}
+				s.AddState(key, state, reg)
+			}
+
+			result, err := s.GetFullState()
+			require.NoError(t, err)
+			assert.Equal(t, tt.result, result)
 		})
 	}
 }
