@@ -372,6 +372,10 @@ func (am *Alertmanager) mergePartialExternalState(part *clusterpb.Part) error {
 	return am.state.(*state).MergePartialState(part)
 }
 
+func (am *Alertmanager) getFullState() (*clusterpb.FullState, error) {
+	return am.state.(*state).GetFullState()
+}
+
 // buildIntegrationsMap builds a map of name to the list of integration notifiers off of a
 // list of receiver config.
 func buildIntegrationsMap(nc []*config.Receiver, tmpl *template.Template, logger log.Logger) (map[string][]notify.Integration, error) {
